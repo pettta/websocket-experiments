@@ -14,7 +14,6 @@ var manager *snapws.Manager[string]
 func main() {
 	// Initializing the upgrader that handles upgrading requests to Websocket.
 	upgrader := snapws.NewUpgrader(nil)
-	upgrader.Use(rejectDuplicateNames)
 
 	// Initializing Manager to keep track of connection and broadcast messages.
 	manager = snapws.NewManager[string](upgrader)
@@ -30,11 +29,13 @@ func main() {
 }
 
 type sentMsg struct {
+	Type string `json:"type"`
 	Text string `json:"text"`
 	To   string `json:"to"` // the user the message is meant to be sent to
 }
 
 type receivedMsg struct {
+	Type string `json:"type"`
 	Text string `json:"text"`
 	From string `json:"from"` // the user who sent the message
 }
@@ -57,26 +58,20 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		if msg.Type == "ping" {
+			if err := conn.SendJSON(context.TODO(), map[string]string{"type": "pong"}); err != nil {
+				fmt.Printf("error sending pong to %s: %v\n", name, err)
+			}
+			continue
+		}
+
 		if targetConn := manager.Get(msg.To); targetConn != nil {
-			rm := receivedMsg{Text: fmt.Sprintf("%s: %s", name, msg.Text), From: name}
+			rm := receivedMsg{Type: msg.Type, Text: fmt.Sprintf("%s: %s", name, msg.Text), From: name}
 			if err := targetConn.SendJSON(context.TODO(), rm); err != nil {
 				fmt.Printf("error sending message from %s to %s: %v\n", name, msg.To, err)
 			}
 		}
 	}
-}
-
-func rejectDuplicateNames(w http.ResponseWriter, r *http.Request) error {
-	name := strings.TrimSpace(r.URL.Query().Get("name"))
-	if name == "" {
-		return snapws.NewMiddlewareErr(http.StatusBadRequest, "username cannot be empty.")
-	}
-	exists := manager.Get(name) != nil
-	if exists {
-		return snapws.NewMiddlewareErr(http.StatusBadRequest, "username already exists, choose another one.")
-	}
-
-	return nil
 }
 
 // This is some dummy hooks.
