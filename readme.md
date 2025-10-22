@@ -1,9 +1,7 @@
 # Frontends 
 ## producer-consumer
 Idea: 
-- On the left hand side have a textbox. This textbox is entirely local. Have a button in said textbox that says "send xxx messages". When you click that it produces that many kafka messages and sends them along 
-
-- On the right hand side, it will be synced to every single user that has this app open. It will be pulling from the websocket server backend, which on boot will seek in the kafka topic to the beginning, then send messages for every single kafka message it sees that was sent with a specfic key to the frontend. 
+- We will have a table with a input above it for a key: It will be pulling from the websocket server backend, which on boot will seek in the kafka topic to the beginning, then send messages for every single kafka message it sees that was sent with a specfic key to the frontend. For each new message we see we add a row to that table 
 
 
 Purpose: 
@@ -17,7 +15,10 @@ Purpose:
 development: `npm run dev`
 production: `npm run build` 
 
-# Backend 
-## To run 
+# Backend (WSS, Kafka)
+## To run WSS 
 development `go run main.go` 
 production `go build -o websocket-server main.go && ./websocket-server` 
+
+## To fill data into kafka 
+
