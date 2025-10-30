@@ -58,6 +58,7 @@ Now Open a new terminal and create a topic:
 Verify the topic now exists and see some key metrics about it:
 - `bin/kafka-topics.sh --describe --topic quickstart-events --bootstrap-server localhost:9092`
 - technically from here you can read/write from a topic, but we want to automate writing to this topic so we'll make a script for that 
+- to manually read from the beginning of the topic: `bin/kafka-console-consumer.sh --topic quickstart-events --from-beginning --bootstrap-server localhost:9092`
 
 ### Bulk loading data into a topic 
 

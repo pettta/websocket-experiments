@@ -19,5 +19,10 @@ config = {
     "client.id": socket.gethostname(),
 }
 
+key = datetime.datetime.now().isoformat()
+s= json.dumps({'a': 'b'*1_000_000,
+               'subscribe-id': 'abc123'})
+
 producer= ConfluentProducer(config)
-producer.produce(topic="quickstart-events", key=f"test-key-{datetime.datetime.now().isoformat()}", value=json.dumps({"test": "data"}))
+producer.produce(topic="quickstart-events", key=key, value=s)
+producer.flush()
