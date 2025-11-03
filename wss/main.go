@@ -16,6 +16,7 @@ import (
 var (
 	manager     *snapws.Manager[string]
 	kafkaEvents = newKafkaRecordStore()
+	subscribers = newKafkaSubscriptionManager()
 )
 
 func main() {
@@ -78,6 +79,15 @@ func newKafkaRecordStore() *kafkaRecordStore {
 	return &kafkaRecordStore{buffer: make(map[string][]kafkaRecord)}
 }
 
+type kafkaSubscriptionManager struct {
+	mu          sync.RWMutex
+	subscribers map[string]map[*snapws.ManagedConn[string]]struct{}
+}
+
+func newKafkaSubscriptionManager() *kafkaSubscriptionManager {
+	return &kafkaSubscriptionManager{subscribers: make(map[string]map[*snapws.ManagedConn[string]]struct{})}
+}
+
 func (s *kafkaRecordStore) add(record kafkaRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -101,6 +111,71 @@ func (s *kafkaRecordStore) get(subscribeID string) []kafkaRecord {
 	copyBuf := make([]kafkaRecord, len(records))
 	copy(copyBuf, records)
 	return copyBuf
+}
+
+func (m *kafkaSubscriptionManager) add(subscribeID string, conn *snapws.ManagedConn[string]) {
+	if subscribeID == "" || conn == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	set, ok := m.subscribers[subscribeID]
+	if !ok {
+		set = make(map[*snapws.ManagedConn[string]]struct{})
+		m.subscribers[subscribeID] = set
+	}
+	set[conn] = struct{}{}
+}
+
+func (m *kafkaSubscriptionManager) removeConnection(conn *snapws.ManagedConn[string]) {
+	if conn == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, set := range m.subscribers {
+		if _, ok := set[conn]; ok {
+			delete(set, conn)
+			if len(set) == 0 {
+				delete(m.subscribers, id)
+			}
+		}
+	}
+}
+
+func (m *kafkaSubscriptionManager) getSubscribers(subscribeID string) []*snapws.ManagedConn[string] {
+	if subscribeID == "" {
+		return nil
+	}
+	m.mu.RLock()
+	set := m.subscribers[subscribeID]
+	result := make([]*snapws.ManagedConn[string], 0, len(set))
+	for conn := range set {
+		result = append(result, conn)
+	}
+	m.mu.RUnlock()
+	return result
+}
+
+func (m *kafkaSubscriptionManager) notify(record kafkaRecord) {
+	conns := m.getSubscribers(record.SubscribeID)
+	if len(conns) == 0 {
+		return
+	}
+
+	payload := struct {
+		Type    string        `json:"type"`
+		Records []kafkaRecord `json:"records"`
+	}{
+		Type:    record.SubscribeID,
+		Records: []kafkaRecord{record},
+	}
+
+	for _, conn := range conns {
+		if err := conn.SendJSON(context.TODO(), payload); err != nil {
+			log.Printf("error streaming Kafka record to %s: %v", conn.Key, err)
+		}
+	}
 }
 
 func handler(w http.ResponseWriter, r *http.Request) {
@@ -129,9 +204,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if msg.Type != "" {
-			if sendKafkaRecords(conn, msg.Type) {
-				continue
-			}
+			handleSubscription(conn, msg.Type)
+			continue
 		}
 
 		if targetConn := manager.Get(msg.To); targetConn != nil {
@@ -222,15 +296,13 @@ func processKafkaMessage(msg *kafka.Message) error {
 	}
 
 	kafkaEvents.add(record)
+	subscribers.notify(record)
 	return nil
 }
 
-func sendKafkaRecords(conn *snapws.ManagedConn[string], subscribeID string) bool {
+func handleSubscription(conn *snapws.ManagedConn[string], subscribeID string) {
+	subscribers.add(subscribeID, conn)
 	records := kafkaEvents.get(subscribeID)
-	if len(records) == 0 {
-		return false
-	}
-
 	payload := struct {
 		Type    string        `json:"type"`
 		Records []kafkaRecord `json:"records"`
@@ -242,7 +314,6 @@ func sendKafkaRecords(conn *snapws.ManagedConn[string], subscribeID string) bool
 	if err := conn.SendJSON(context.TODO(), payload); err != nil {
 		log.Printf("error sending Kafka records to %s: %v", conn.Key, err)
 	}
-	return true
 }
 
 // This is some dummy hooks.
@@ -254,6 +325,7 @@ func onRegister(conn *snapws.ManagedConn[string]) {
 func onUnregister(conn *snapws.ManagedConn[string]) {
 	id := conn.Key
 	conn.Manager.BroadcastString(context.TODO(), []byte(id+" is offline"), id)
+	subscribers.removeConnection(conn)
 }
 
 func pingHandler(w http.ResponseWriter, r *http.Request) {

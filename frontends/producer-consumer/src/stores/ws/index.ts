@@ -5,7 +5,8 @@ export const useWsStore = defineStore('ws', {
     ws: null as WebSocket | null, 
     wsConnection: 'Disconnected',
     reconnectTimeout: null as number | null, 
-    pingInterval: null as number | null 
+    pingInterval: null as number | null,
+        subscribed: [] as string[],
   }),
   actions: {
   init() {
@@ -15,6 +16,9 @@ export const useWsStore = defineStore('ws', {
             console.log("Connected to WS")
             this.wsConnection = 'Connected'
             this.ping() 
+            this.subscribed.forEach((channel) => {
+                this.ws?.send(JSON.stringify({ type: channel }))
+            })
         }
     }
     this.ws.onmessage = (event) => {
@@ -47,10 +51,26 @@ export const useWsStore = defineStore('ws', {
   close(){
     if (this.ws) {
         this.ws.close()
-    } if (this.reconnectTimeout) {
+    }
+    if (this.reconnectTimeout) {
         clearTimeout(this.reconnectTimeout)
         this.reconnectTimeout = null
     }
-  }
-}
-})
+    if (this.pingInterval) {
+        window.clearInterval(this.pingInterval)
+        this.pingInterval = null
+    }
+  },
+  subscribe(channel: string) {
+    const normalized = channel.trim()
+    if (!normalized) {
+        return
+    }
+    if (!this.subscribed.includes(normalized)) {
+        this.subscribed = [...this.subscribed, normalized]
+    }
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ type: normalized }))
+    }
+    },
+}})
