@@ -27,6 +27,7 @@ production: `npm run build`
 ## To run WSS 
 Requirements: 
 - golang
+- 64 bit version of C compiler for confluent kafka (MSVC doesnt work, so either find a minGW64 build or run the repo through WSL2 on a distro like debian)
 
 Golang Requirements: 
 - snapws 
@@ -48,6 +49,7 @@ Python Requirements:
 Setup to get the docker image and start the container over TCP: 
 - `docker pull apache/kafka:4.1.0`
 - `docker run -p 9092:9092 apache/kafka:4.1.0`
+- Once you have done this once, you can simply just run the image from docker desktop (containers tab that has a kafka image with ports) then proceed to the next step. 
 
 Now Open a new terminal and create a topic:
 - `docker ps`
