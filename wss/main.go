@@ -21,14 +21,16 @@ var (
 
 const topicQuickstart = "quickstart-events"
 
+const (
+	metadataTimeoutMs  = 5000
+	kafkaPollTimeoutMs = 250
+)
+
 func main() {
-	// Initializing the upgrader that handles upgrading requests to Websocket.
 	upgrader := snapws.NewUpgrader(nil)
-
-	// Initializing Manager to keep track of connection and broadcast messages.
 	manager = snapws.NewManager[string](upgrader)
-	defer manager.Shutdown()
 
+	defer manager.Shutdown()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -68,6 +70,11 @@ type kafkaRecord struct {
 	Value       json.RawMessage `json:"value"`
 	Partition   int32           `json:"partition"`
 	Offset      int64           `json:"offset"`
+}
+
+type kafkaRecordPayload struct {
+	Type    string        `json:"type"`
+	Records []kafkaRecord `json:"records"`
 }
 
 type kafkaRecordStore struct {
@@ -165,13 +172,7 @@ func (m *kafkaSubscriptionManager) notify(record kafkaRecord) {
 		return
 	}
 
-	payload := struct {
-		Type    string        `json:"type"`
-		Records []kafkaRecord `json:"records"`
-	}{
-		Type:    record.SubscribeID,
-		Records: []kafkaRecord{record},
-	}
+	payload := newKafkaRecordPayload(record.SubscribeID, []kafkaRecord{record})
 
 	for _, conn := range conns {
 		if err := conn.SendJSON(context.TODO(), payload); err != nil {
@@ -180,8 +181,15 @@ func (m *kafkaSubscriptionManager) notify(record kafkaRecord) {
 	}
 }
 
+func newKafkaRecordPayload(subscribeID string, records []kafkaRecord) kafkaRecordPayload {
+	if records == nil {
+		records = []kafkaRecord{}
+	}
+	return kafkaRecordPayload{Type: subscribeID, Records: records}
+}
+
 func assignTopicFromBeginning(consumer *kafka.Consumer, topic string) ([]kafka.TopicPartition, error) {
-	metadata, err := consumer.GetMetadata(&topic, false, 5000)
+	metadata, err := consumer.GetMetadata(&topic, false, metadataTimeoutMs)
 	if err != nil {
 		return nil, fmt.Errorf("fetch metadata for %s: %w", topic, err)
 	}
@@ -214,7 +222,7 @@ func loadInitialRecords(consumer *kafka.Consumer, assignments []kafka.TopicParti
 	remaining := len(assignments)
 
 	for remaining > 0 {
-		ev := consumer.Poll(250)
+		ev := consumer.Poll(kafkaPollTimeoutMs)
 		if ev == nil {
 			continue
 		}
@@ -310,7 +318,7 @@ func consumeKafka(ctx context.Context, consumer *kafka.Consumer) {
 		default:
 		}
 
-		ev := consumer.Poll(250)
+		ev := consumer.Poll(kafkaPollTimeoutMs)
 		if ev == nil {
 			continue
 		}
@@ -369,18 +377,7 @@ func processKafkaMessage(msg *kafka.Message, broadcast bool) error {
 func handleSubscription(conn *snapws.ManagedConn[string], subscribeID string) {
 	subscribers.add(subscribeID, conn)
 	records := kafkaEvents.get(subscribeID)
-	if records == nil {
-		records = []kafkaRecord{}
-	}
-	payload := struct {
-		Type    string        `json:"type"`
-		Records []kafkaRecord `json:"records"`
-	}{
-		Type:    subscribeID,
-		Records: records,
-	}
-
-	if err := conn.SendJSON(context.TODO(), payload); err != nil {
+	if err := conn.SendJSON(context.TODO(), newKafkaRecordPayload(subscribeID, records)); err != nil {
 		log.Printf("error sending Kafka records to %s: %v", conn.Key, err)
 	}
 }
