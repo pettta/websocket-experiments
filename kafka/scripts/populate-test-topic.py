@@ -20,7 +20,7 @@ config = {
 }
 
 key = datetime.datetime.now().isoformat()
-s= json.dumps({'a': 'b'*1_000_000,
+s= json.dumps({'a': 'b'*900_000,
                'subscribe-id': 'abc123'})
 
 producer= ConfluentProducer(config)
