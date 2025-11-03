@@ -19,6 +19,8 @@ var (
 	subscribers = newKafkaSubscriptionManager()
 )
 
+const topicQuickstart = "quickstart-events"
+
 func main() {
 	// Initializing the upgrader that handles upgrading requests to Websocket.
 	upgrader := snapws.NewUpgrader(nil)
@@ -178,6 +180,63 @@ func (m *kafkaSubscriptionManager) notify(record kafkaRecord) {
 	}
 }
 
+func assignTopicFromBeginning(consumer *kafka.Consumer, topic string) ([]kafka.TopicPartition, error) {
+	metadata, err := consumer.GetMetadata(&topic, false, 5000)
+	if err != nil {
+		return nil, fmt.Errorf("fetch metadata for %s: %w", topic, err)
+	}
+
+	topicMeta, ok := metadata.Topics[topic]
+	if !ok {
+		return nil, fmt.Errorf("topic %s not found in metadata", topic)
+	}
+
+	assignments := make([]kafka.TopicPartition, 0, len(topicMeta.Partitions))
+	topicCopy := topic
+	for _, p := range topicMeta.Partitions {
+		partition := kafka.TopicPartition{Topic: &topicCopy, Partition: p.ID, Offset: kafka.Offset(kafka.OffsetBeginning)}
+		assignments = append(assignments, partition)
+	}
+
+	if err := consumer.Assign(assignments); err != nil {
+		return nil, fmt.Errorf("assign partitions: %w", err)
+	}
+
+	return assignments, nil
+}
+
+func loadInitialRecords(consumer *kafka.Consumer, assignments []kafka.TopicPartition) {
+	if len(assignments) == 0 {
+		return
+	}
+
+	reached := make(map[int32]bool)
+	remaining := len(assignments)
+
+	for remaining > 0 {
+		ev := consumer.Poll(250)
+		if ev == nil {
+			continue
+		}
+
+		switch e := ev.(type) {
+		case *kafka.Message:
+			if err := processKafkaMessage(e, false); err != nil {
+				log.Printf("error processing Kafka message during bootstrap: %v", err)
+			}
+		case kafka.PartitionEOF:
+			partition := e.Partition
+			if !reached[partition] {
+				reached[partition] = true
+				remaining--
+			}
+		case kafka.Error:
+			log.Printf("Kafka consumer error during bootstrap: %v", e)
+		default:
+		}
+	}
+}
+
 func handler(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.URL.Query().Get("name"))
 	conn, err := manager.Connect(name, w, r)
@@ -219,9 +278,11 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 func newKafkaConsumer() (*kafka.Consumer, error) {
 	config := &kafka.ConfigMap{
-		"bootstrap.servers": "localhost:9092",
-		"group.id":          "wss-gateway",
-		"auto.offset.reset": "earliest",
+		"bootstrap.servers":    "localhost:9092",
+		"group.id":             "wss-gateway",
+		"auto.offset.reset":    "earliest",
+		"enable.auto.commit":   false,
+		"enable.partition.eof": true,
 	}
 
 	consumer, err := kafka.NewConsumer(config)
@@ -229,12 +290,15 @@ func newKafkaConsumer() (*kafka.Consumer, error) {
 		return nil, err
 	}
 
-	if err := consumer.Subscribe("quickstart-events", nil); err != nil {
+	assignments, err := assignTopicFromBeginning(consumer, topicQuickstart)
+	if err != nil {
 		consumer.Close()
 		return nil, err
 	}
 
-	log.Println("Kafka consumer subscribed to quickstart-events")
+	loadInitialRecords(consumer, assignments)
+
+	log.Println("Kafka consumer assigned to quickstart-events from beginning")
 	return consumer, nil
 }
 
@@ -253,7 +317,7 @@ func consumeKafka(ctx context.Context, consumer *kafka.Consumer) {
 
 		switch e := ev.(type) {
 		case *kafka.Message:
-			if err := processKafkaMessage(e); err != nil {
+			if err := processKafkaMessage(e, true); err != nil {
 				log.Printf("error processing Kafka message: %v", err)
 			}
 		case kafka.Error:
@@ -262,7 +326,7 @@ func consumeKafka(ctx context.Context, consumer *kafka.Consumer) {
 	}
 }
 
-func processKafkaMessage(msg *kafka.Message) error {
+func processKafkaMessage(msg *kafka.Message, broadcast bool) error {
 	if msg == nil || len(msg.Value) == 0 {
 		return nil
 	}
@@ -296,13 +360,18 @@ func processKafkaMessage(msg *kafka.Message) error {
 	}
 
 	kafkaEvents.add(record)
-	subscribers.notify(record)
+	if broadcast {
+		subscribers.notify(record)
+	}
 	return nil
 }
 
 func handleSubscription(conn *snapws.ManagedConn[string], subscribeID string) {
 	subscribers.add(subscribeID, conn)
 	records := kafkaEvents.get(subscribeID)
+	if records == nil {
+		records = []kafkaRecord{}
+	}
 	payload := struct {
 		Type    string        `json:"type"`
 		Records []kafkaRecord `json:"records"`
